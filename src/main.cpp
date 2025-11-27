@@ -3,10 +3,6 @@
 #include <WebServer.h>
 #include <esp_camera.h>
 
-// Remplacez par vos identifiants WiFi
-const char* ssid = "Tilaskarot";
-const char* password = "vn635muss4689p8";
-
 WebServer server(80);
 
 // Brochage de la caméra pour Seeed XIAO ESP32S3 Sense
@@ -55,7 +51,7 @@ void setup() {
   config.pixel_format = PIXFORMAT_JPEG;
 
   // Initialisation selon la résolution souhaitée
-  config.frame_size = FRAMESIZE_QVGA;
+  config.frame_size = FRAMESIZE_VGA;
   config.jpeg_quality = 30;
   config.fb_count = 2;
 
@@ -67,7 +63,7 @@ void setup() {
   }
 
   // Connexion au WiFi
-  WiFi.begin(ssid, password);
+  WiFi.begin(SSID_WIFI, PWD_WIFI);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -81,29 +77,47 @@ void setup() {
   // Route pour le flux MJPEG
   server.on("/stream", HTTP_GET, [](){
     WiFiClient client = server.client();
-    String response = "HTTP/1.1 200 OK\r\n";
-    response += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n";
-    response += "\r\n";
-    server.sendContent(response);
 
-    while (true) {
+    // En-têtes initiaux (pas de Connection: close)
+    client.print("HTTP/1.1 200 OK\r\n");
+    client.print("Content-Type: multipart/x-mixed-replace; boundary=frame\r\n");
+    client.print("Cache-Control: no-cache\r\n");
+    client.print("Pragma: no-cache\r\n");
+    client.print("\r\n");
+
+    while (client.connected()) {
       camera_fb_t *fb = esp_camera_fb_get();
       if (!fb) {
         Serial.println("Échec de la capture");
         break;
       }
 
-      response = "--frame\r\n";
-      response += "Content-Type: image/jpeg\r\n\r\n";
-      server.sendContent(response);
+      // En-tête de la partie avec Content-Length
+      client.print("--frame\r\n");
+      client.print("Content-Type: image/jpeg\r\n");
+      client.print("Content-Length: " + String(fb->len) + "\r\n");
+      client.print("\r\n");
 
-      // Envoi de l'image
-      client.write((const char *)fb->buf, fb->len);
-      server.sendContent("\r\n");
+      // Envoi des bytes JPEG bruts
+      size_t written = client.write(fb->buf, fb->len);
+      if (written != fb->len) {
+        Serial.printf("Client write mismatch: %u/%u\n", (unsigned)written, (unsigned)fb->len);
+        esp_camera_fb_return(fb);
+        break;
+      }
 
-      // Libération du frame buffer
+      client.print("\r\n");
       esp_camera_fb_return(fb);
+
+      // Laisser le temps au réseau et vérifier la connexion
+      delay(10);
+      if (!client.connected()) {
+        Serial.println("Client disconnected");
+        break;
+      }
     }
+
+    if (client) client.stop();
   });
 
   server.begin();
